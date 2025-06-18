@@ -1,20 +1,19 @@
-# PDF Audiobook Creator
+# Audiobook Player
 
-A Python application that converts PDF documents into audiobooks with features similar to Audible. This application provides a modern, user-friendly interface for managing and listening to your PDF documents as audiobooks.
+A modern, feature-rich audiobook player built with Python and customtkinter. Converts text files to speech with a beautiful Audible-inspired interface.
 
 ## Features
 
-- PDF text extraction and processing
-- High-quality text-to-speech conversion
-- Automatic chapter detection
-- Modern GUI with dark mode
-- Audiobook library management
-- Playback controls:
-  - Play/Pause
-  - Chapter navigation
-  - Variable playback speed (0.5x to 2.0x)
-  - Progress tracking
-  - Chapter selection
+- 🎧 Text-to-Speech playback with Windows SAPI
+- 🎨 Beautiful dark theme inspired by Audible
+- ⏯️ Play/Pause with progress tracking
+- ⏩ Speed control (0.5x - 2.0x)
+- ⏪ Forward/Rewind 30 seconds
+- 🕒 Sleep timer
+- 📚 Library management
+- 🔖 Bookmarking system
+- 💾 Progress saving
+- 📖 Support for text files
 
 ## Screenshots
 
@@ -22,18 +21,20 @@ A Python application that converts PDF documents into audiobooks with features s
 
 ## Requirements
 
-- Python 3.8 or higher
-- Windows (for text-to-speech support)
+- Windows 10/11 (for SAPI text-to-speech)
+- Python 3.8+
+- customtkinter
+- pywin32
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/pdf-audiobook-creator.git
-cd pdf-audiobook-creator
+git clone https://github.com/yourusername/audiobook-player.git
+cd audiobook-player
 ```
 
-2. Install the required dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
@@ -45,27 +46,33 @@ pip install -r requirements.txt
 python main.py
 ```
 
-2. Click "Add Book" to select a PDF file
-3. Wait for the conversion process to complete
-4. Select your book from the library
-5. Use the chapter dropdown to select a chapter
-6. Use playback controls to listen to your audiobook
+2. Click "Add Book" to add text files to your library
+3. Select a book from your library to start playing
+4. Use the controls to:
+   - Play/Pause
+   - Adjust speed
+   - Skip forward/backward
+   - Set sleep timer
+   - Add bookmarks
 
 ## How it Works
 
-1. **PDF Processing**: Uses PyPDF2 to extract text from PDF files
-2. **Chapter Detection**: Automatically detects chapters using common patterns
-3. **Text-to-Speech**: Converts text to speech using pyttsx3
-4. **Audio Playback**: Uses pygame for audio playback with controls
-5. **GUI**: Built with customtkinter for a modern look
+1. **Text-to-Speech**: Converts text to speech using Windows SAPI
+2. **GUI**: Built with customtkinter for a modern look
+3. **Progress Tracking**: Tracks playback progress
+4. **Speed Control**: Allows adjusting playback speed
+5. **Sleep Timer**: Adds a sleep timer to the playback
+6. **Library Management**: Manages a library of text files
+7. **Bookmarking System**: Allows adding bookmarks
+8. **Progress Saving**: Saves playback progress
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE)
 
 ## Acknowledgments
 

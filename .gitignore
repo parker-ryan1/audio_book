@@ -25,15 +25,23 @@ venv/
 env/
 ENV/
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+*.pdf
+library.json
+bookmarks.json
+
 # Audio files
 audio_books/
 
 # Application specific
-library.json
-
-# IDE
-.vscode/
-.idea/
+notes.json
+reading_stats.json
 
 # OS specific
 .DS_Store

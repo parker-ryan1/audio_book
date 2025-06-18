@@ -1,451 +1,629 @@
 import os
 import json
-import PyPDF2
-import pyttsx3
-import pygame
 import customtkinter as ctk
-from PIL import Image
 from datetime import datetime
 import threading
+import win32com.client
 import time
-import re
-import tempfile
-import wave
 
 class AudiobookPlayer:
     def __init__(self):
         self.app = ctk.CTk()
-        self.app.title("PDF Audiobook Player")
-        self.app.geometry("1200x700")
+        self.app.title("Audiobook Player")
+        self.app.geometry("1200x800")
         ctk.set_appearance_mode("dark")
         
-        # Initialize audio engine
-        self.engine = pyttsx3.init()
+        # Initialize text-to-speech
+        self.speaker = win32com.client.Dispatch("SAPI.SpVoice")
+        self.speaker.Rate = 1  # -10 to 10
+        self.speaker.Volume = 100  # 0 to 100
+        
+        # Initialize state
         self.current_book = None
         self.is_playing = False
+        self.current_text = ""
         self.current_position = 0
+        self.total_length = 0
+        self.play_thread = None
         self.playback_speed = 1.0
+        
+        # Sleep timer
+        self.sleep_timer = None
+        self.sleep_time_remaining = 0
+        
+        # Load saved data
         self.library = self.load_library()
-        self.chapters = []
-        self.current_chapter_index = 0
-        
-        # Configure TTS engine
-        self.engine.setProperty('rate', 175)
-        self.engine.setProperty('volume', 1.0)
-        
-        # Get available voices
-        voices = self.engine.getProperty('voices')
-        if voices:
-            self.engine.setProperty('voice', voices[0].id)  # Set first available voice
-        
-        # Initialize pygame mixer
-        pygame.mixer.init(frequency=44100)
-        pygame.mixer.music.set_volume(1.0)
+        self.bookmarks = self.load_bookmarks()
         
         self.setup_gui()
-    
+        
+        # Check for last played book
+        last_book = self.get_last_played_book()
+        if last_book:
+            self.show_resume_dialog(last_book)
+
     def setup_gui(self):
-        # Create main container
-        self.main_container = ctk.CTkFrame(self.app)
-        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        """Set up the GUI elements."""
+        # Create main frame with Audible-like dark theme
+        self.app.configure(fg_color="#232F3E")  # Audible's dark blue
+        main_frame = ctk.CTkFrame(self.app, fg_color="#232F3E")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        # Create left sidebar
-        self.sidebar = ctk.CTkFrame(self.main_container, width=200)
-        self.sidebar.pack(side="left", fill="y", padx=10, pady=10)
+        # Title with Audible-like styling
+        title_label = ctk.CTkLabel(
+            main_frame, 
+            text="Audiobook Player", 
+            font=("Arial", 28, "bold"),
+            text_color="#FF9900"  # Audible's orange
+        )
+        title_label.pack(pady=10)
         
-        # Create right content area
-        self.content_area = ctk.CTkFrame(self.main_container)
-        self.content_area.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        # Library section
+        self.setup_library_section(main_frame)
         
-        # Sidebar components
+        # Player section
+        self.setup_player_section(main_frame)
+        
+        # Bottom controls
+        self.setup_bottom_controls(main_frame)
+
+    def setup_library_section(self, parent):
+        library_frame = ctk.CTkFrame(parent, fg_color="#2F3F4F")
+        library_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Library header
+        header = ctk.CTkFrame(library_frame, fg_color="#2F3F4F")
+        header.pack(fill="x", padx=5, pady=5)
+        
+        ctk.CTkLabel(
+            header,
+            text="Your Library",
+            font=("Arial", 18, "bold"),
+            text_color="#FF9900"
+        ).pack(side="left", padx=10)
+        
+        # Add book button
         self.add_book_btn = ctk.CTkButton(
-            self.sidebar, 
-            text="Add Book",
+            header,
+            text="+ Add Book",
+            font=("Arial", 12),
+            fg_color="#FF9900",
+            text_color="#232F3E",
+            hover_color="#FFB84D",
             command=self.add_book
         )
-        self.add_book_btn.pack(pady=10, padx=10)
+        self.add_book_btn.pack(side="right", padx=10)
         
-        self.library_label = ctk.CTkLabel(self.sidebar, text="Library")
-        self.library_label.pack(pady=(20,10))
+        # Book list
+        self.book_list = ctk.CTkScrollableFrame(
+            library_frame,
+            fg_color="#2F3F4F",
+            height=150
+        )
+        self.book_list.pack(fill="x", padx=10, pady=5)
+
+    def setup_player_section(self, parent):
+        player_frame = ctk.CTkFrame(parent, fg_color="#2F3F4F")
+        player_frame.pack(fill="x", padx=10, pady=10)
         
-        self.library_list = ctk.CTkScrollableFrame(self.sidebar, width=180, height=400)
-        self.library_list.pack(fill="both", expand=True)
-        
-        # Main content area
-        # Top section - Book title and chapter selector
-        self.top_section = ctk.CTkFrame(self.content_area)
-        self.top_section.pack(fill="x", pady=10)
+        # Current book info
+        info_frame = ctk.CTkFrame(player_frame, fg_color="#2F3F4F")
+        info_frame.pack(fill="x", padx=10, pady=5)
         
         self.book_title = ctk.CTkLabel(
-            self.top_section,
+            info_frame,
             text="No book selected",
-            font=("Arial", 20)
+            font=("Arial", 16, "bold"),
+            text_color="#FFFFFF"
         )
-        self.book_title.pack(side="left", pady=10, padx=20)
+        self.book_title.pack(pady=5)
         
-        # Chapter selection
-        self.chapter_frame = ctk.CTkFrame(self.content_area)
-        self.chapter_frame.pack(fill="x", pady=10)
+        # Progress bar and time
+        progress_frame = ctk.CTkFrame(player_frame, fg_color="#2F3F4F")
+        progress_frame.pack(fill="x", padx=10, pady=5)
         
-        self.chapter_label = ctk.CTkLabel(self.chapter_frame, text="Chapter:")
-        self.chapter_label.pack(side="left", padx=10)
-        
-        self.chapter_menu = ctk.CTkOptionMenu(
-            self.chapter_frame,
-            values=["No chapters available"],
-            command=self.select_chapter
+        self.current_time = ctk.CTkLabel(
+            progress_frame,
+            text="0:00",
+            text_color="#B4B4B4"
         )
-        self.chapter_menu.pack(side="left", padx=10)
+        self.current_time.pack(side="left")
         
-        # Progress section
-        self.progress_frame = ctk.CTkFrame(self.content_area)
-        self.progress_frame.pack(fill="x", pady=10)
-        
-        self.current_time = ctk.CTkLabel(self.progress_frame, text="0:00")
-        self.current_time.pack(side="left", padx=10)
-        
-        self.progress_bar = ctk.CTkProgressBar(self.progress_frame)
+        self.progress_bar = ctk.CTkProgressBar(
+            progress_frame,
+            progress_color="#FF9900",
+            height=8
+        )
         self.progress_bar.pack(side="left", fill="x", expand=True, padx=10)
         self.progress_bar.set(0)
         
-        self.total_time = ctk.CTkLabel(self.progress_frame, text="0:00")
-        self.total_time.pack(side="right", padx=10)
-        
-        # Control buttons
-        self.controls_frame = ctk.CTkFrame(self.content_area)
-        self.controls_frame.pack(pady=20)
-        
-        self.prev_chapter_btn = ctk.CTkButton(
-            self.controls_frame,
-            text="⏮",
-            width=40,
-            command=self.previous_chapter
+        self.total_time = ctk.CTkLabel(
+            progress_frame,
+            text="0:00",
+            text_color="#B4B4B4"
         )
-        self.prev_chapter_btn.pack(side="left", padx=5)
+        self.total_time.pack(side="right")
+
+    def setup_bottom_controls(self, parent):
+        controls_frame = ctk.CTkFrame(parent, fg_color="#2F3F4F")
+        controls_frame.pack(fill="x", padx=10, pady=5)
         
-        self.play_btn = ctk.CTkButton(
-            self.controls_frame,
-            text="▶",
+        # Main controls
+        main_controls = ctk.CTkFrame(controls_frame, fg_color="#2F3F4F")
+        main_controls.pack(pady=10)
+        
+        # Rewind 30s
+        self.rewind_btn = ctk.CTkButton(
+            main_controls,
+            text="⟲ 30",
             width=40,
+            fg_color="#3F4F5F",
+            hover_color="#4F5F6F",
+            command=self.rewind_30
+        )
+        self.rewind_btn.pack(side="left", padx=5)
+        
+        # Play/Pause
+        self.play_btn = ctk.CTkButton(
+            main_controls,
+            text="▶",
+            width=60,
+            fg_color="#FF9900",
+            hover_color="#FFB84D",
             command=self.toggle_play
         )
-        self.play_btn.pack(side="left", padx=5)
+        self.play_btn.pack(side="left", padx=10)
         
-        self.next_chapter_btn = ctk.CTkButton(
-            self.controls_frame,
-            text="⏭",
+        # Forward 30s
+        self.forward_btn = ctk.CTkButton(
+            main_controls,
+            text="⟳ 30",
             width=40,
-            command=self.next_chapter
+            fg_color="#3F4F5F",
+            hover_color="#4F5F6F",
+            command=self.forward_30
         )
-        self.next_chapter_btn.pack(side="left", padx=5)
+        self.forward_btn.pack(side="left", padx=5)
+        
+        # Bottom row controls
+        bottom_row = ctk.CTkFrame(controls_frame, fg_color="#2F3F4F")
+        bottom_row.pack(fill="x", pady=5)
         
         # Speed control
-        self.speed_frame = ctk.CTkFrame(self.content_area)
-        self.speed_frame.pack(pady=10)
+        speed_frame = ctk.CTkFrame(bottom_row, fg_color="#2F3F4F")
+        speed_frame.pack(side="left", padx=10)
         
-        self.speed_label = ctk.CTkLabel(self.speed_frame, text="Speed: 1.0x")
-        self.speed_label.pack(side="left", padx=10)
+        ctk.CTkLabel(
+            speed_frame,
+            text="Speed",
+            text_color="#B4B4B4"
+        ).pack(side="left", padx=5)
         
-        self.speed_slider = ctk.CTkSlider(
-            self.speed_frame,
-            from_=0.5,
-            to=2.0,
-            number_of_steps=6,
-            command=self.change_speed
+        self.speed_menu = ctk.CTkOptionMenu(
+            speed_frame,
+            values=["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"],
+            command=self.change_speed,
+            fg_color="#3F4F5F",
+            button_color="#3F4F5F",
+            button_hover_color="#4F5F6F"
         )
-        self.speed_slider.pack(side="left", padx=10)
-        self.speed_slider.set(1.0)
+        self.speed_menu.pack(side="left", padx=5)
+        self.speed_menu.set("1.0x")
         
-        self.update_library_list()
-    
-    def detect_chapters(self, text):
-        # Common chapter patterns
-        patterns = [
-            r'Chapter \d+',
-            r'CHAPTER \d+',
-            r'Chapter \d+:.*?(?=Chapter \d+|$)',
-            r'CHAPTER \d+:.*?(?=CHAPTER \d+|$)',
-        ]
+        # Sleep timer
+        self.sleep_btn = ctk.CTkButton(
+            bottom_row,
+            text="🕒 Sleep Timer",
+            fg_color="#3F4F5F",
+            hover_color="#4F5F6F",
+            command=self.set_sleep_timer
+        )
+        self.sleep_btn.pack(side="right", padx=10)
         
-        chapters = []
-        current_pos = 0
-        
-        for pattern in patterns:
-            matches = list(re.finditer(pattern, text))
-            if matches:
-                for i, match in enumerate(matches):
-                    start = match.start()
-                    end = matches[i+1].start() if i < len(matches)-1 else len(text)
-                    chapter_text = text[start:end].strip()
-                    chapters.append({
-                        'title': match.group(),
-                        'start': start,
-                        'end': end,
-                        'text': chapter_text
-                    })
-                break  # Use first pattern that finds chapters
-        
-        if not chapters:
-            # If no chapters found, create artificial chapters
-            chunk_size = len(text) // 10  # Split into 10 parts
-            for i in range(10):
-                start = i * chunk_size
-                end = start + chunk_size if i < 9 else len(text)
-                chapters.append({
-                    'title': f'Section {i+1}',
-                    'start': start,
-                    'end': end,
-                    'text': text[start:end].strip()
-                })
-        
-        return chapters
-    
-    def convert_pdf_to_audio(self, pdf_path, book_id):
+        # Bookmark button
+        self.bookmark_btn = ctk.CTkButton(
+            bottom_row,
+            text="🔖",
+            width=30,
+            fg_color="#3F4F5F",
+            hover_color="#4F5F6F",
+            command=self.show_bookmarks
+        )
+        self.bookmark_btn.pack(side="right", padx=5)
+
+    def play_text(self):
+        """Play the text using text-to-speech."""
         try:
-            # Create audio directory if it doesn't exist
-            audio_dir = os.path.join(os.path.dirname(__file__), "audio_books")
-            os.makedirs(audio_dir, exist_ok=True)
-            
-            # Extract text from PDF
-            pdf_reader = PyPDF2.PdfReader(pdf_path)
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text() + " "
-            
-            # Detect chapters
-            chapters = self.detect_chapters(text)
-            self.library[book_id]['chapters'] = chapters
-            
-            # Create audio files for each chapter
-            chapter_paths = []
-            for i, chapter in enumerate(chapters):
-                # First save as WAV
-                temp_wav = os.path.join(tempfile.gettempdir(), f"temp_book_{book_id}_chapter_{i}.wav")
-                self.engine.save_to_file(chapter['text'], temp_wav)
-                self.engine.runAndWait()
+            if self.current_text:
+                print("Starting text playback")
+                # Split text into manageable chunks
+                chunk_size = 1000  # characters
+                chunks = [self.current_text[i:i+chunk_size] 
+                         for i in range(0, len(self.current_text), chunk_size)]
                 
-                # Convert WAV to proper format for pygame
-                chapter_audio_path = os.path.join(audio_dir, f"book_{book_id}_chapter_{i}.wav")
+                print(f"Total chunks: {len(chunks)}")
+                self.total_length = len(chunks)
+                start_chunk = int(self.current_position * self.total_length)
+                print(f"Starting from chunk: {start_chunk}")
                 
-                # Copy the WAV file to final location
-                with wave.open(temp_wav, 'rb') as src:
-                    with wave.open(chapter_audio_path, 'wb') as dst:
-                        # Copy WAV parameters
-                        dst.setnchannels(src.getnchannels())
-                        dst.setsampwidth(src.getsampwidth())
-                        dst.setframerate(src.getframerate())
-                        # Copy audio data
-                        dst.writeframes(src.readframes(src.getnframes()))
-                
-                chapter_paths.append(chapter_audio_path)
-                
-                # Clean up temp file
-                try:
-                    os.remove(temp_wav)
-                except:
-                    pass
-            
-            # Update book info
-            self.library[book_id]["chapter_paths"] = chapter_paths
-            self.library[book_id]["current_chapter"] = 0
-            self.save_library()
-            
-            # Update UI if this is the current book
-            if self.current_book and self.current_book["id"] == book_id:
-                self.app.after(0, self.update_chapter_menu)
-            
-        except Exception as e:
-            print(f"Error converting PDF to audio: {str(e)}")
-    
-    def select_chapter(self, chapter_title):
-        if not self.current_book or 'chapters' not in self.current_book:
-            return
-        
-        try:
-            # Find chapter index
-            chapters = self.current_book['chapters']
-            for i, chapter in enumerate(chapters):
-                if chapter['title'] == chapter_title:
-                    self.current_chapter_index = i
-                    self.current_position = 0
+                for i in range(start_chunk, len(chunks)):
+                    if not self.is_playing:
+                        print("Playback stopped")
+                        break
                     
-                    # Load and prepare chapter audio
-                    if self.is_playing:
-                        pygame.mixer.music.stop()
+                    chunk = chunks[i]
+                    print(f"Playing chunk {i} of {len(chunks)}")
+                    self.speaker.Speak(chunk)
+                    
+                    # Update progress
+                    self.current_position = i / self.total_length
+                    self.update_progress()
+                    
+                    # Check sleep timer
+                    if self.sleep_timer and time.time() >= self.sleep_timer:
+                        print("Sleep timer triggered")
                         self.is_playing = False
-                        self.play_btn.configure(text="▶")
-                    
-                    chapter_path = self.current_book["chapter_paths"][i]
-                    if os.path.exists(chapter_path):
-                        pygame.mixer.music.load(chapter_path)
-                        pygame.mixer.music.play(start=0)
-                        pygame.mixer.music.pause()
-                        self.update_progress_display()
-                    else:
-                        print(f"Audio file not found: {chapter_path}")
-                    break
+                        self.sleep_timer = None
+                        break
+                
+                if self.is_playing:
+                    print("Playback completed")
+                    self.is_playing = False
+                    self.play_btn.configure(text="▶")
+                
         except Exception as e:
-            print(f"Error selecting chapter: {str(e)}")
-    
-    def update_chapter_menu(self):
-        if self.current_book and 'chapters' in self.current_book:
-            chapter_titles = [chapter['title'] for chapter in self.current_book['chapters']]
-            self.chapter_menu.configure(values=chapter_titles)
-            self.chapter_menu.set(chapter_titles[self.current_chapter_index])
-        else:
-            self.chapter_menu.configure(values=["No chapters available"])
-            self.chapter_menu.set("No chapters available")
-    
-    def select_book(self, book_id):
-        try:
-            # Stop current playback
-            if self.is_playing:
-                self.toggle_play()
-            
-            self.current_book = self.library[book_id]
-            self.book_title.configure(text=self.current_book["title"])
-            
-            # Reset playback state
-            self.current_chapter_index = self.current_book.get("current_chapter", 0)
-            self.current_position = 0
+            print(f"Error playing text: {str(e)}")
+            import traceback
+            traceback.print_exc()
             self.is_playing = False
             self.play_btn.configure(text="▶")
-            
-            # Update chapter menu
-            self.update_chapter_menu()
-            
-            # Load first chapter
-            if "chapter_paths" in self.current_book:
-                pygame.mixer.music.load(self.current_book["chapter_paths"][self.current_chapter_index])
-                pygame.mixer.music.play(start=0)
-                pygame.mixer.music.pause()
-            
-            self.update_progress_display()
-            
-        except Exception as e:
-            print(f"Error selecting book: {str(e)}")
-    
+
     def toggle_play(self):
-        if not self.current_book or "chapter_paths" not in self.current_book:
+        """Toggle audio playback."""
+        if not self.current_book:
+            print("No book selected")
             return
         
         try:
-            chapter_path = self.current_book["chapter_paths"][self.current_chapter_index]
-            if not os.path.exists(chapter_path):
-                print(f"Audio file not found: {chapter_path}")
-                return
-            
             if self.is_playing:
-                pygame.mixer.music.pause()
+                print("Stopping playback")
+                self.is_playing = False
+                self.speaker.Speak("", 2)  # Stop speaking
+                if self.play_thread:
+                    print("Waiting for thread to finish")
+                    self.play_thread.join()
                 self.play_btn.configure(text="▶")
             else:
-                if not pygame.mixer.music.get_busy():
-                    pygame.mixer.music.load(chapter_path)
-                    pygame.mixer.music.play(start=self.current_position)
-                else:
-                    pygame.mixer.music.unpause()
-                
+                print("Starting playback")
+                if not self.current_text:
+                    print("No text loaded")
+                    return
+                print(f"Text length: {len(self.current_text)}")
+                print(f"Current position: {self.current_position}")
+                self.is_playing = True
+                self.play_thread = threading.Thread(target=self.play_text)
+                self.play_thread.daemon = True
+                self.play_thread.start()
                 self.play_btn.configure(text="⏸")
             
-            self.is_playing = not self.is_playing
+            # Update last played time
+            self.current_book['last_played'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.save_library()
             
         except Exception as e:
             print(f"Error toggling playback: {str(e)}")
-    
-    def update_progress_display(self):
-        if self.current_book and "chapter_paths" in self.current_book:
-            try:
-                current_chapter = self.current_book["chapters"][self.current_chapter_index]
-                total_text = len(current_chapter["text"])
-                progress = self.current_position / total_text if total_text > 0 else 0
-                self.progress_bar.set(progress)
-                
-                # Update time display (approximate based on reading speed)
-                words_per_minute = 175  # Based on TTS rate
-                total_minutes = len(current_chapter["text"].split()) / words_per_minute
-                current_minutes = total_minutes * progress
-                
-                self.current_time.configure(text=self.format_time(current_minutes * 60))
-                self.total_time.configure(text=self.format_time(total_minutes * 60))
-                
-            except Exception as e:
-                print(f"Error updating progress display: {str(e)}")
-    
+            import traceback
+            traceback.print_exc()
+
+    def rewind_30(self):
+        """Rewind 30 seconds."""
+        if self.current_text:
+            # Estimate 30 seconds worth of text
+            chunk_size = 1000  # characters
+            chunks_per_second = 3  # rough estimate
+            chunks_to_move = 30 * chunks_per_second
+            
+            new_pos = max(0, self.current_position - (chunks_to_move / self.total_length))
+            self.current_position = new_pos
+            self.update_progress()
+
+    def forward_30(self):
+        """Forward 30 seconds."""
+        if self.current_text:
+            # Estimate 30 seconds worth of text
+            chunk_size = 1000  # characters
+            chunks_per_second = 3  # rough estimate
+            chunks_to_move = 30 * chunks_per_second
+            
+            new_pos = min(1, self.current_position + (chunks_to_move / self.total_length))
+            self.current_position = new_pos
+            self.update_progress()
+
+    def change_speed(self, speed):
+        """Change playback speed."""
+        speed_value = float(speed.replace('x', ''))
+        self.playback_speed = speed_value
+        self.speaker.Rate = int((speed_value - 1) * 10)  # Convert to SAPI5 rate (-10 to 10)
+
+    def set_sleep_timer(self):
+        """Set sleep timer dialog."""
+        dialog = ctk.CTkToplevel(self.app)
+        dialog.title("Sleep Timer")
+        dialog.geometry("250x300")
+        dialog.configure(fg_color="#232F3E")
+        
+        ctk.CTkLabel(
+            dialog,
+            text="Stop playing after:",
+            font=("Arial", 14, "bold"),
+            text_color="#FF9900"
+        ).pack(pady=10)
+        
+        times = ["Off", "15 minutes", "30 minutes", "45 minutes", "60 minutes"]
+        
+        for time_str in times:
+            btn = ctk.CTkButton(
+                dialog,
+                text=time_str,
+                fg_color="#3F4F5F",
+                hover_color="#4F5F6F",
+                command=lambda t=time_str: self.start_sleep_timer(t)
+            )
+            btn.pack(pady=5, padx=20, fill="x")
+
+    def start_sleep_timer(self, time_str):
+        """Start the sleep timer."""
+        if time_str == "Off":
+            self.sleep_timer = None
+            return
+        
+        minutes = int(time_str.split()[0])
+        self.sleep_timer = time.time() + (minutes * 60)
+
+    def show_bookmarks(self):
+        """Show bookmarks dialog."""
+        if not self.current_book:
+            return
+        
+        dialog = ctk.CTkToplevel(self.app)
+        dialog.title("Bookmarks")
+        dialog.geometry("400x500")
+        dialog.configure(fg_color="#232F3E")
+        
+        ctk.CTkLabel(
+            dialog,
+            text="Bookmarks",
+            font=("Arial", 18, "bold"),
+            text_color="#FF9900"
+        ).pack(pady=10)
+        
+        # Add bookmark button
+        add_btn = ctk.CTkButton(
+            dialog,
+            text="Add Bookmark",
+            fg_color="#FF9900",
+            text_color="#232F3E",
+            hover_color="#FFB84D",
+            command=lambda: self.add_bookmark(dialog)
+        )
+        add_btn.pack(pady=10)
+        
+        # Show existing bookmarks
+        book_id = self.current_book['id']
+        if book_id in self.bookmarks:
+            for bookmark in self.bookmarks[book_id]:
+                self.create_bookmark_widget(dialog, bookmark)
+
+    def create_bookmark_widget(self, parent, bookmark):
+        """Create a widget for a bookmark."""
+        frame = ctk.CTkFrame(parent, fg_color="#2F3F4F")
+        frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(
+            frame,
+            text=f"Position: {int(bookmark['position'] * 100)}%",
+            text_color="#FFFFFF"
+        ).pack(pady=2)
+        
+        btn = ctk.CTkButton(
+            frame,
+            text="Go to Bookmark",
+            fg_color="#3F4F5F",
+            hover_color="#4F5F6F",
+            command=lambda: self.go_to_bookmark(bookmark)
+        )
+        btn.pack(pady=5)
+
+    def add_bookmark(self, dialog):
+        """Add a bookmark at current position."""
+        if not self.current_book:
+            return
+        
+        book_id = self.current_book['id']
+        if book_id not in self.bookmarks:
+            self.bookmarks[book_id] = []
+        
+        bookmark = {
+            'position': self.current_position,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        self.bookmarks[book_id].append(bookmark)
+        self.save_bookmarks()
+        
+        # Update dialog
+        self.create_bookmark_widget(dialog, bookmark)
+
+    def go_to_bookmark(self, bookmark):
+        """Go to bookmark position."""
+        self.current_position = bookmark['position']
+        self.update_progress()
+        if self.is_playing:
+            self.toggle_play()  # Stop current playback
+            self.toggle_play()  # Start from new position
+
+    def update_progress(self):
+        """Update progress display."""
+        if self.current_text:
+            self.progress_bar.set(self.current_position)
+            
+            # Update time display (rough estimate)
+            total_seconds = len(self.current_text) / (200 * self.playback_speed)  # ~200 chars per second
+            current_seconds = total_seconds * self.current_position
+            
+            self.current_time.configure(text=self.format_time(current_seconds))
+            self.total_time.configure(text=self.format_time(total_seconds))
+
     def format_time(self, seconds):
+        """Format seconds to MM:SS."""
         minutes = int(seconds // 60)
         seconds = int(seconds % 60)
         return f"{minutes}:{seconds:02d}"
-    
-    def previous_chapter(self):
-        if self.current_book and "chapters" in self.current_book:
-            self.current_chapter_index = max(0, self.current_chapter_index - 1)
-            self.current_position = 0
-            self.update_chapter_menu()
-            self.select_chapter(self.current_book["chapters"][self.current_chapter_index]["title"])
-    
-    def next_chapter(self):
-        if self.current_book and "chapters" in self.current_book:
-            self.current_chapter_index = min(
-                len(self.current_book["chapters"]) - 1,
-                self.current_chapter_index + 1
-            )
-            self.current_position = 0
-            self.update_chapter_menu()
-            self.select_chapter(self.current_book["chapters"][self.current_chapter_index]["title"])
-    
-    def change_speed(self, value):
-        self.playback_speed = value
-        self.speed_label.configure(text=f"Speed: {value:.1f}x")
-        if self.is_playing:
-            self.engine.setProperty('rate', int(175 * value))
-    
-    def add_book(self):
-        file_path = ctk.filedialog.askopenfilename(
-            filetypes=[("PDF files", "*.pdf")]
-        )
-        if file_path:
-            book_name = os.path.basename(file_path)
-            book_id = str(len(self.library) + 1)
-            
-            book_info = {
-                "id": book_id,
-                "title": book_name,
-                "path": file_path,
-                "current_chapter": 0,
-                "date_added": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            self.library[book_id] = book_info
-            self.save_library()
-            self.update_library_list()
-            
-            # Convert PDF to audio in background
-            threading.Thread(target=self.convert_pdf_to_audio, args=(file_path, book_id)).start()
-    
-    def load_library(self):
-        try:
-            with open("library.json", "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    
-    def save_library(self):
-        with open("library.json", "w") as f:
-            json.dump(self.library, f)
-    
+
     def update_library_list(self):
-        for widget in self.library_list.winfo_children():
+        """Update the library list display."""
+        # Clear existing items
+        for widget in self.book_list.winfo_children():
             widget.destroy()
         
-        for book_id, book_info in self.library.items():
-            book_btn = ctk.CTkButton(
-                self.library_list,
-                text=book_info["title"],
-                command=lambda id=book_id: self.select_book(id)
+        # Add books to list
+        for book_id, book in self.library.items():
+            # Create frame for book item
+            book_frame = ctk.CTkFrame(self.book_list, fg_color="#2F3F4F")
+            book_frame.pack(fill="x", padx=5, pady=2)
+            
+            # Book title
+            title = ctk.CTkLabel(
+                book_frame,
+                text=book['title'],
+                font=("Arial", 12),
+                text_color="#FFFFFF"
             )
-            book_btn.pack(pady=5, fill="x")
-    
+            title.pack(side="left", padx=10, pady=5)
+            
+            # Make the whole frame clickable
+            book_frame.bind("<Button-1>", lambda e, id=book_id: self.load_book(id))
+            title.bind("<Button-1>", lambda e, id=book_id: self.load_book(id))
+
+    def load_book(self, book_id):
+        """Load a book from the library."""
+        if book_id in self.library:
+            self.current_book = self.library[book_id]
+            self.book_title.configure(text=self.current_book['title'])
+            
+            try:
+                with open(self.current_book['path'], 'r', encoding='utf-8') as f:
+                    self.current_text = f.read()
+            except:
+                with open(self.current_book['path'], 'rb') as f:
+                    self.current_text = f.read().decode('utf-8', errors='ignore')
+            
+            self.current_position = 0
+            self.update_progress()
+
+    def add_book(self):
+        """Add a new book to the library."""
+        try:
+            file_path = ctk.filedialog.askopenfilename(
+                title="Select PDF Book",
+                filetypes=[("PDF files", "*.pdf"), ("Text files", "*.txt")]
+            )
+            
+            if file_path:
+                # Generate unique book ID
+                book_id = str(int(datetime.now().timestamp()))
+                
+                # Create book entry
+                book = {
+                    'id': book_id,
+                    'title': os.path.splitext(os.path.basename(file_path))[0],
+                    'path': file_path,
+                    'last_played': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                
+                # Read the text
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        self.current_text = f.read()
+                except:
+                    with open(file_path, 'rb') as f:
+                        self.current_text = f.read().decode('utf-8', errors='ignore')
+                
+                # Add to library
+                self.library[book_id] = book
+                self.save_library()
+                self.update_library_list()
+                
+                # Select the new book
+                self.current_book = book
+                self.book_title.configure(text=book['title'])
+                self.current_position = 0
+                self.update_progress()
+                
+        except Exception as e:
+            print(f"Error adding book: {str(e)}")
+
+    def load_library(self):
+        """Load the library data from file."""
+        try:
+            if os.path.exists('library.json'):
+                with open('library.json', 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Error loading library: {str(e)}")
+        return {}
+
+    def save_library(self):
+        """Save the library data to file."""
+        try:
+            with open('library.json', 'w') as f:
+                json.dump(self.library, f)
+        except Exception as e:
+            print(f"Error saving library: {str(e)}")
+
+    def load_bookmarks(self):
+        """Load bookmarks from file."""
+        try:
+            if os.path.exists('bookmarks.json'):
+                with open('bookmarks.json', 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Error loading bookmarks: {str(e)}")
+        return {}
+
+    def save_bookmarks(self):
+        """Save bookmarks to file."""
+        try:
+            with open('bookmarks.json', 'w') as f:
+                json.dump(self.bookmarks, f)
+        except Exception as e:
+            print(f"Error saving bookmarks: {str(e)}")
+
+    def get_last_played_book(self):
+        """Get the most recently played book."""
+        if not self.library:
+            return None
+        return max(self.library.values(), 
+                  key=lambda x: x.get('last_played', ''), 
+                  default=None)
+
+    def show_resume_dialog(self, book):
+        """Show dialog to resume last played book."""
+        self.current_book = book
+        self.book_title.configure(text=book['title'])
+        
+        try:
+            with open(book['path'], 'r', encoding='utf-8') as f:
+                self.current_text = f.read()
+        except:
+            with open(book['path'], 'rb') as f:
+                self.current_text = f.read().decode('utf-8', errors='ignore')
+        
+        self.current_position = 0
+        self.update_progress()
+
     def run(self):
+        """Run the application."""
         self.app.mainloop()
 
 if __name__ == "__main__":
